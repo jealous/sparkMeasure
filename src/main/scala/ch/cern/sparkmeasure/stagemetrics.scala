@@ -2,55 +2,80 @@ package ch.cern.sparkmeasure
 
 import org.apache.spark.scheduler._
 import org.apache.spark.sql.{DataFrame, SparkSession}
-import scala.collection.mutable.ListBuffer
-
 import org.slf4j.LoggerFactory
 
+import scala.collection.mutable.ListBuffer
+
 /**
- * Spark Measure package: proof-of-concept tool for measuring Spark performance metrics
- *   This is based on using Spark Listeners as data source and collecting metrics in a ListBuffer
- *   The list buffer is then transformed into a DataFrame for analysis
- *
- *  Stage Metrics: collects and aggregates metrics at the end of each stage
- *  Task Metrics: collects data at task granularity
- *
- * Use modes:
- *   Interactive mode from the REPL
- *   Flight recorder mode: records data and saves it for later processing
- *
- * Supported languages:
- *   The tool is written in Scala, but it can be used both from Scala and Python
- *
- * Example usage for stage metrics:
- * val stageMetrics = ch.cern.sparkmeasure.StageMetrics(spark)
- * stageMetrics.runAndMeasure(spark.sql("select count(*) from range(1000) cross join range(1000) cross join range(1000)").show)
- *
- * for task metrics:
- * val taskMetrics = ch.cern.sparkmeasure.TaskMetrics(spark)
- * spark.sql("select count(*) from range(1000) cross join range(1000) cross join range(1000)").show()
- * val df = taskMetrics.createTaskMetricsDF()
- *
- * To use in flight recorder mode add:
- * --conf spark.extraListeners=ch.cern.sparkmeasure.FlightRecorderStageMetrics
- *
- * Created by Luca.Canali@cern.ch, March 2017
- *
- */
+  * Spark Measure package: proof-of-concept tool for measuring Spark performance metrics
+  * This is based on using Spark Listeners as data source and collecting metrics in a ListBuffer
+  * The list buffer is then transformed into a DataFrame for analysis
+  *
+  * Stage Metrics: collects and aggregates metrics at the end of each stage
+  * Task Metrics: collects data at task granularity
+  *
+  * Use modes:
+  * Interactive mode from the REPL
+  * Flight recorder mode: records data and saves it for later processing
+  *
+  * Supported languages:
+  * The tool is written in Scala, but it can be used both from Scala and Python
+  *
+  * Example usage for stage metrics:
+  * val stageMetrics = ch.cern.sparkmeasure.StageMetrics(spark)
+  * stageMetrics.runAndMeasure(spark.sql("select count(*) from range(1000) cross join range(1000) cross join range(1000)").show)
+  *
+  * for task metrics:
+  * val taskMetrics = ch.cern.sparkmeasure.TaskMetrics(spark)
+  * spark.sql("select count(*) from range(1000) cross join range(1000) cross join range(1000)").show()
+  * val df = taskMetrics.createTaskMetricsDF()
+  *
+  * To use in flight recorder mode add:
+  * --conf spark.extraListeners=ch.cern.sparkmeasure.FlightRecorderStageMetrics
+  *
+  * Created by Luca.Canali@cern.ch, March 2017
+  *
+  */
 
-case class StageVals (jobId: Int, stageId: Int, name: String,
-                 submissionTime: Long, completionTime: Long, stageDuration: Long, numTasks: Int,
-                 executorRunTime: Long, executorCpuTime: Long,
-                 executorDeserializeTime: Long, executorDeserializeCpuTime: Long,
-                 resultSerializationTime: Long, jvmGCTime: Long, resultSize: Long, numUpdatedBlockStatuses: Int,
-                 diskBytesSpilled: Long, memoryBytesSpilled: Long, peakExecutionMemory: Long, recordsRead: Long,
-                 bytesRead: Long, recordsWritten: Long, bytesWritten: Long,
-                 shuffleFetchWaitTime: Long, shuffleTotalBytesRead: Long, shuffleTotalBlocksFetched: Long,
-                 shuffleLocalBlocksFetched: Long, shuffleRemoteBlocksFetched: Long, shuffleWriteTime: Long,
-                 shuffleBytesWritten: Long, shuffleRecordsWritten: Long
-                )
+case class _StageMetrics(submissionTime: Long,
+                         completionTime: Long,
+                         stageDuration: Long,
+                         numTasks: Long)
 
-case class StageAccumulablesInfo (jobId: Int, stageId: Int, submissionTime: Long, completionTime: Long,
-                                  accId: Long, name: String, value: Long)
+case class _TaskMetrics(executorRunTime: Long,
+                        executorCpuTime: Long,
+                        executorDeserializeTime: Long,
+                        executorDeserializeCpuTime: Long,
+                        resultSerializationTime: Long,
+                        jvmGCTime: Long,
+                        resultSize: Long,
+                        numUpdatedBlockStatuses: Int,
+                        diskBytesSpilled: Long,
+                        memoryBytesSpilled: Long,
+                        peakExecutionMemory: Long,
+                        recordsRead: Long,
+                        bytesRead: Long,
+                        recordsWritten: Long,
+                        bytesWritten: Long)
+
+case class _ShuffleMetrics(shuffleFetchWaitTime: Long,
+                           shuffleTotalBytesRead: Long,
+                           shuffleTotalBlocksFetched: Long,
+                           shuffleLocalBlocksFetched: Long,
+                           shuffleRemoteBlocksFetched: Long,
+                           shuffleWriteTime: Long,
+                           shuffleBytesWritten: Long,
+                           shuffleRecordsWritten: Long)
+
+case class StageVals(jobId: Int,
+                     stageId: Int,
+                     name: String,
+                     stageMetrics: _StageMetrics,
+                     taskMetrics: _TaskMetrics,
+                     shuffleMetrics: _ShuffleMetrics)
+
+case class StageAccumulablesInfo(jobId: Int, stageId: Int, submissionTime: Long, completionTime: Long,
+                                 accId: Long, name: String, value: Long)
 
 class StageInfoRecorderListener extends SparkListener {
 
@@ -63,29 +88,48 @@ class StageInfoRecorderListener extends SparkListener {
   }
 
   /**
-   * This methods fires at the end of the stage and collects metrics flattened into the stageMetricsData ListBuffer
-   * Note all times are in ms, cpu time and shufflewrite are originally in nanosec, thus in the code are divided by 1e6
-   */
+    * This methods fires at the end of the stage and collects metrics flattened into the stageMetricsData ListBuffer
+    * Note all times are in ms, cpu time and shufflewrite are originally in nanosec, thus in the code are divided by 1e6
+    */
   override def onStageCompleted(stageCompleted: SparkListenerStageCompleted): Unit = {
     val stageInfo = stageCompleted.stageInfo
     val taskMetrics = stageInfo.taskMetrics
     val jobId = StageIdtoJobId(stageInfo.stageId)
-    val currentStage = StageVals(jobId, stageInfo.stageId, stageInfo.name,
-      stageInfo.submissionTime.getOrElse(0L), stageInfo.completionTime.getOrElse(0L),
+    val _stageMetrics = _StageMetrics(
+      stageInfo.submissionTime.getOrElse(0L),
+      stageInfo.completionTime.getOrElse(0L),
       stageInfo.completionTime.getOrElse(0L) - stageInfo.submissionTime.getOrElse(0L),
-      stageInfo.numTasks, taskMetrics.executorRunTime, taskMetrics.executorCpuTime / 1000000,
-      taskMetrics.executorDeserializeTime, taskMetrics.executorDeserializeCpuTime / 1000000,
-      taskMetrics.resultSerializationTime, taskMetrics.jvmGCTime, taskMetrics.resultSize,
-      taskMetrics.updatedBlockStatuses.length, taskMetrics.diskBytesSpilled, taskMetrics.memoryBytesSpilled,
+      stageInfo.numTasks)
+    val _taskMetrics = _TaskMetrics(
+      taskMetrics.executorRunTime,
+      taskMetrics.executorCpuTime / 1000000,
+      taskMetrics.executorDeserializeTime,
+      taskMetrics.executorDeserializeCpuTime / 1000000,
+      taskMetrics.resultSerializationTime,
+      taskMetrics.jvmGCTime,
+      taskMetrics.resultSize,
+      taskMetrics.updatedBlockStatuses.length,
+      taskMetrics.diskBytesSpilled,
+      taskMetrics.memoryBytesSpilled,
       taskMetrics.peakExecutionMemory,
-      taskMetrics.inputMetrics.recordsRead, taskMetrics.inputMetrics.bytesRead,
-      taskMetrics.outputMetrics.recordsWritten, taskMetrics.outputMetrics.bytesWritten,
-      taskMetrics.shuffleReadMetrics.fetchWaitTime, taskMetrics.shuffleReadMetrics.totalBytesRead,
-      taskMetrics.shuffleReadMetrics.totalBlocksFetched, taskMetrics.shuffleReadMetrics.localBlocksFetched,
+      taskMetrics.inputMetrics.recordsRead,
+      taskMetrics.inputMetrics.bytesRead,
+      taskMetrics.outputMetrics.recordsWritten,
+      taskMetrics.outputMetrics.bytesWritten
+    )
+    val _shuffleMetrics = _ShuffleMetrics(
+      taskMetrics.shuffleReadMetrics.fetchWaitTime,
+      taskMetrics.shuffleReadMetrics.totalBytesRead,
+      taskMetrics.shuffleReadMetrics.totalBlocksFetched,
+      taskMetrics.shuffleReadMetrics.localBlocksFetched,
       taskMetrics.shuffleReadMetrics.remoteBlocksFetched,
-      taskMetrics.shuffleWriteMetrics.writeTime / 1000000, taskMetrics.shuffleWriteMetrics.bytesWritten,
+      taskMetrics.shuffleWriteMetrics.writeTime / 1000000,
+      taskMetrics.shuffleWriteMetrics.bytesWritten,
       taskMetrics.shuffleWriteMetrics.recordsWritten
     )
+    val currentStage = StageVals(jobId, stageInfo.stageId, stageInfo.name,
+      _stageMetrics, _taskMetrics, _shuffleMetrics)
+
     stageMetricsData += currentStage
 
     /** Collect data from accumulators, with additional care to keep only numerical values */
@@ -93,7 +137,7 @@ class StageInfoRecorderListener extends SparkListener {
       val value = acc._2.value.getOrElse(0L).asInstanceOf[Long]
       val name = acc._2.name.getOrElse("")
       val currentAccumulablesInfo = StageAccumulablesInfo(jobId, stageInfo.stageId,
-          stageInfo.submissionTime.getOrElse(0L), stageInfo.completionTime.getOrElse(0L), acc._1, name, value)
+        stageInfo.submissionTime.getOrElse(0L), stageInfo.completionTime.getOrElse(0L), acc._1, name, value)
       accumulablesMetricsData += currentAccumulablesInfo
     }
     catch {
@@ -156,18 +200,18 @@ case class StageMetrics(sparkSession: SparkSession) {
     println("\nAggregated Spark accumulables of type internal.metric. Sum of values grouped by metric name")
     println("Name => sum(value) [group by name]\n")
 
-    val prefixLength = "internal.metrics.".size  // 17
-    internalMetricsDf.as[(String,Long)].
+    val prefixLength = "internal.metrics.".size // 17
+    internalMetricsDf.as[(String, Long)].
       collect.
       foreach {
         case ((name: String, value: Long)) => {
           // executorCpuTime, executorDeserializeCpuTime and shuffle.write.writeTime are in nanoseconds,
           // this piece of code armonizes the values to milliseconds
           val printVal =
-            if (name.contains("CpuTime") || name.contains("shuffle.write.writeTime"))
-              (value / 1e6).toLong
-            else
-              value
+          if (name.contains("CpuTime") || name.contains("shuffle.write.writeTime"))
+            (value / 1e6).toLong
+          else
+            value
           // trim the prefix internal.metrics as it is just noise in this context
           println(Utils.prettyPrintValues(name.substring(prefixLength), printVal))
         }
@@ -181,12 +225,12 @@ case class StageMetrics(sparkSession: SparkSession) {
     println("\nSQL Metrics and other non-internal metrics. Values grouped per accumulatorId and metric name.")
     println("Accid, Name => max(value) [group by accId, name]\n")
 
-    otherAccumulablesDf.as[(String, String,Long)].
+    otherAccumulablesDf.as[(String, String, Long)].
       collect.
       foreach {
-        case((accId: String, name: String, value: Long)) =>
+        case ((accId: String, name: String, value: Long)) =>
           // remove the suffix (min, med, max) where present in the metric name as it is just noise in this context
-          println("%5s".format(accId) + ", " + Utils.prettyPrintValues(name.replace(" (min, med, max)",""), value))
+          println("%5s".format(accId) + ", " + Utils.prettyPrintValues(name.replace(" (min, med, max)", ""), value))
       }
   }
 
@@ -214,7 +258,7 @@ case class StageMetrics(sparkSession: SparkSession) {
     val cols = aggregateDF.columns
     (cols zip aggregateValues)
       .foreach {
-        case((n:String, v:Long)) =>
+        case ((n: String, v: Long)) =>
           println(Utils.prettyPrintValues(n, v))
       }
   }

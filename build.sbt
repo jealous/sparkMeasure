@@ -1,18 +1,21 @@
 name := "spark-measure"
 
-version := "0.12-SNAPSHOT"
+version := "0.12.1"
 
-scalaVersion := "2.11.11"
+scalaVersion := "2.10.7"
     
 resolvers += Resolver.mavenLocal
 licenses += ("Apache-2.0", url("http://www.apache.org/licenses/LICENSE-2.0"))
 
-isSnapshot := true
+isSnapshot := false
 
 spIgnoreProvided := true
-sparkVersion := "2.1.1"
 
-libraryDependencies += "org.apache.spark" %% "spark-sql" % "2.1.1"
+val spark = "2.1.0"
+
+sparkVersion := spark
+
+libraryDependencies += "org.apache.spark" %% "spark-sql" % spark
 libraryDependencies += "com.fasterxml.jackson.module" %% "jackson-module-scala" % "2.6.5"
 libraryDependencies += "org.slf4j" % "slf4j-api" % "1.7.25"
 libraryDependencies += "org.scalatest" %% "scalatest" % "3.0.3" % "test"
@@ -22,13 +25,7 @@ organization := "ch.cern.sparkmeasure"
 
 // publishing to Maven
 publishMavenStyle := true
-
-publishTo := Some(
-  if (isSnapshot.value)
-    Opts.resolver.sonatypeSnapshots
-  else
-    Opts.resolver.sonatypeStaging
-)
+publishTo := Some(Resolver.file("file",  new File(Path.userHome.absolutePath+"/.m2/repository")))
 
 homepage := Some(url("https://github.com/LucaCanali/sparkMeasure"))
 scmInfo := Some(
@@ -37,3 +34,13 @@ scmInfo := Some(
     "scm:git@github.com:LucaCanali/sparkMeasure.git"
   )
 )
+
+assemblyMergeStrategy in assembly := {
+  case PathList("META-INF", "MANIFEST.MF") =>
+    MergeStrategy.discard
+  case PathList(ps @ _*) =>
+    MergeStrategy.first
+  case x =>
+    val oldStrategy = (assemblyMergeStrategy in assembly).value
+    oldStrategy(x)
+}
